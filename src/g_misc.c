@@ -208,6 +208,7 @@ ThrowGib(edict_t *self, char *gibname, int damage, int type)
 	gib->takedamage = DAMAGE_YES;
 	gib->die = gib_die;
 	gib->health = 250;
+	gib->mass = 76;
 
 	if (type == GIB_ORGANIC)
 	{

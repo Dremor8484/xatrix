@@ -1046,6 +1046,14 @@ bfg_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 	{
 		PlayerNoise(self->owner, self->s.origin, PNOISE_IMPACT);
 	}
+	
+	int weapon_bfg_damage_direct = 200;
+	int weapon_bfg_damage_radius = 200;
+	if (sv_custom_settings->value)
+	{
+		weapon_bfg_damage_direct = cs_weapon_bfg_damage_direct->value;
+		weapon_bfg_damage_radius = cs_weapon_bfg_damage_radius->value;
+	}
 
 	/* core explosion - prevents firing it into the wall/floor */
 	if (other->takedamage)
@@ -1053,10 +1061,10 @@ bfg_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface_t *surf)
 		get_normal_vector(plane, normal);
 
 		T_Damage(other, self, self->owner, self->velocity, self->s.origin,
-				normal, 200, 0, 0, MOD_BFG_BLAST);
+				normal, weapon_bfg_damage_direct, 0, 0, MOD_BFG_BLAST); //200
 	}
 
-	T_RadiusDamage(self, self->owner, 200, other, 100, MOD_BFG_BLAST);
+	T_RadiusDamage(self, self->owner, weapon_bfg_damage_radius, other, 100, MOD_BFG_BLAST); //200
 
 	gi.sound(self, CHAN_VOICE, gi.soundindex("weapons/bfg__x1b.wav"), 1, ATTN_NORM, 0);
 	self->solid = SOLID_NOT;
@@ -1524,8 +1532,10 @@ fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage,
 
 	plasma->owner = self;
 	plasma->touch = plasma_touch;
-	plasma->nextthink = level.time + (8000.0f / (float)speed);
+	
+	plasma->nextthink = level.time + (8000.0f / (float)speed);	
 	plasma->think = G_FreeEdict;
+
 	plasma->dmg = damage;
 	plasma->radius_dmg = radius_damage;
 	plasma->dmg_radius = damage_radius;
@@ -1543,6 +1553,126 @@ fire_plasma(edict_t *self, vec3_t start, vec3_t dir, int damage,
 }
 
 void
+plasmaheat_think(edict_t *self)
+{
+	edict_t *target = NULL;
+	edict_t *aquire = NULL;
+	vec3_t vec;
+	float len;
+	float oldlen = 0;
+
+	if (!self)
+	{
+		return;
+	}
+	
+	int heat_range = 128;
+	if (sv_custom_settings->value && cs_weapon_phalanx_heat_seeker->value)
+	{
+		heat_range = cs_weapon_phalanx_heat_range->value;
+	}
+
+	/* aquire new target */
+	while ((target = findradius(target, self->s.origin, heat_range)) != NULL) //1024
+	{
+		if (self->owner == target)
+		{
+			continue;
+		}
+
+		//if (!target->client)
+		//{
+			//continue;
+		//}
+		
+		//do not select gib
+		if (target->mass == 76)
+		{
+			continue;
+		}
+
+		if (target->health <= 0)
+		{
+			continue;
+		}
+
+		if (!infront(self, target))
+		{
+			continue;
+		}
+
+		if (!visible(self, target))
+		{
+			continue;
+		}
+
+		VectorSubtract(self->s.origin, target->s.origin, vec);
+		len = VectorLength(vec);
+
+		if ((!aquire) || (len < oldlen))
+		{
+			aquire = target;
+			oldlen = len;
+		}
+	}
+
+	if (aquire)
+	{
+		VectorSubtract(aquire->s.origin, self->s.origin, vec);
+		vectoangles(vec, self->s.angles);
+		VectorNormalize(vec);
+		VectorScale(vec, 500, self->velocity);
+	}
+
+	self->nextthink = level.time + 0.1;
+}
+
+void
+fire_plasmaheat(edict_t *self, vec3_t start, vec3_t dir, int damage,
+		int speed, float damage_radius, int radius_damage)
+{
+	edict_t *plasmaheat;
+
+	if (!self)
+	{
+		return;
+	}
+
+	plasmaheat = G_Spawn();
+	VectorCopy(start, plasmaheat->s.origin);
+	VectorCopy(dir, plasmaheat->movedir);
+	vectoangles(dir, plasmaheat->s.angles);
+	VectorScale(dir, speed, plasmaheat->velocity);
+	plasmaheat->movetype = MOVETYPE_FLYMISSILE;
+	plasmaheat->clipmask = MASK_SHOT;
+	plasmaheat->solid = SOLID_BBOX;
+
+	VectorClear(plasmaheat->mins);
+	VectorClear(plasmaheat->maxs);
+
+	plasmaheat->owner = self;
+	plasmaheat->touch = plasma_touch;
+	
+	plasmaheat->nextthink = level.time + 0.1;
+	plasmaheat->think = plasmaheat_think;
+
+	plasmaheat->dmg = damage;
+	plasmaheat->radius_dmg = radius_damage;
+	plasmaheat->dmg_radius = damage_radius;
+	plasmaheat->s.sound = gi.soundindex("weapons/rockfly.wav");
+
+	plasmaheat->s.modelindex = gi.modelindex("sprites/s_photon.sp2");
+	plasmaheat->s.effects |= EF_PLASMA | EF_ANIM_ALLFAST;
+
+	if (self->client)
+	{
+		check_dodge(self, plasmaheat->s.origin, dir, speed);
+	}
+
+	gi.linkentity(plasmaheat);
+}
+
+void
 Trap_Think(edict_t *ent)
 {
 	edict_t *target = NULL;
@@ -1551,6 +1681,15 @@ Trap_Think(edict_t *ent)
 	int len, i;
 	int oldlen = 8000;
 	vec3_t forward, right, up;
+	
+	int minlen = 32;
+	int search_radius = 256;
+	if (sv_custom_settings->value)
+	{
+		oldlen = cs_weapon_trap_len_max->value;
+		minlen = cs_weapon_trap_len_min->value;
+		search_radius = cs_weapon_trap_search_radius->value;
+	}
 
 	if (!ent)
 	{
@@ -1680,7 +1819,7 @@ Trap_Think(edict_t *ent)
 		ent->s.frame++;
 	}
 
-	while ((target = findradius(target, ent->s.origin, 256)) != NULL)
+	while ((target = findradius(target, ent->s.origin, search_radius)) != NULL) //256
 	{
 		if (target == ent)
 		{
@@ -1748,7 +1887,7 @@ Trap_Think(edict_t *ent)
 		gi.sound(ent, CHAN_VOICE, gi.soundindex(
 						"weapons/trapsuck.wav"), 1, ATTN_IDLE, 0);
 
-		if (len < 32)
+		if (len < minlen) //32
 		{
 			if (best->mass < 400)
 			{
